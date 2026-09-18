@@ -78,31 +78,34 @@ bun run --cwd packages/opencode script/build.ts --single --skip-install
 # binary lands at packages/opencode/dist/<platform>-<arch>/bin/opencode
 ```
 
-Run it side-by-side with upstream `opencode` under an isolated profile (separate
-config, sessions, cache — shared API keys), e.g. as `~/.local/bin/opencode-fork`:
+Run it as a drop-in replacement for upstream `opencode` — same name, shared
+sessions, credentials, and config. Put this wrapper earlier on your `PATH`
+than the upstream binary (e.g. `~/.local/bin/opencode`):
 
 ```sh
 #!/bin/sh
-export XDG_DATA_HOME="$HOME/.opencode-fork/data"
-export XDG_STATE_HOME="$HOME/.opencode-fork/state"
-export XDG_CACHE_HOME="$HOME/.opencode-fork/cache"
-export XDG_CONFIG_HOME="$HOME/.opencode-fork/config"
+export OPENCODE_DB="$HOME/.local/share/opencode/opencode.db"
 export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
 exec /path/to/opencode-but-better/packages/opencode/dist/opencode-linux-x64/bin/opencode "$@"
 ```
 
-Then point the fork at your existing keys and a working default model:
+(`OPENCODE_DB` pins the shared sessions database: fork builds use a
+version-derived DB filename otherwise. Everything else — `auth.json`, global
+config, cache — is shared by using the standard XDG paths.)
 
-```bash
-mkdir -p ~/.opencode-fork/data/opencode
-ln -sf ~/.local/share/opencode/auth.json ~/.opencode-fork/data/opencode/auth.json
-opencode-fork auth login   # only if the link above doesn't cover your provider
+Make sure the shared global config names a working default model, e.g. in
+`~/.config/opencode/opencode.jsonc`:
+
+```jsonc
+{
+  "model": "opencode-go/deepseek-v4.1-flash"
+}
 ```
 
 Notes:
 
-- Project-local `.opencode/` directories are shared with upstream by design;
-  global config, sessions/DB, cache, and state are split.
+- The upstream binary stays intact wherever it was (e.g.
+  `/usr/local/bin/opencode`); remove the wrapper to go back to it.
 - If you serve both at once, give them different ports (`serve --port ...`).
 
 ### What's different in this fork
