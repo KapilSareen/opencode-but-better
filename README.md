@@ -1,4 +1,4 @@
-# opencode-but-better
+# opencode-extended
 
 An opinionated fork of opencode: background subagents that don't block you, agents that watch things and wake you up, and diffs that stay on screen. Drop-in replacement for the `opencode` binary — same sessions, same keys, same config.
 
@@ -29,8 +29,8 @@ An opinionated fork of opencode: background subagents that don't block you, agen
 Prerequisites: [Bun](https://bun.sh) >= 1.3 and git. Build takes a few minutes (embeds the web UI):
 
 ```bash
-git clone -b better https://github.com/KapilSareen/opencode-but-better.git
-cd opencode-but-better
+git clone -b better https://github.com/KapilSareen/opencode-extended.git
+cd opencode-extended
 bun install
 bun run --cwd packages/opencode script/build.ts --single --skip-install
 # binary: packages/opencode/dist/<platform>-<arch>/bin/opencode
@@ -43,7 +43,7 @@ earlier on `PATH` than the upstream binary (e.g. `~/.local/bin/opencode`):
 #!/bin/sh
 export OPENCODE_DB="$HOME/.local/share/opencode/opencode.db"
 export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
-exec /path/to/opencode-but-better/packages/opencode/dist/opencode-linux-x64/bin/opencode "$@"
+exec /path/to/opencode-extended/packages/opencode/dist/opencode-linux-x64/bin/opencode "$@"
 ```
 
 (`OPENCODE_DB` pins the shared sessions database — dev builds otherwise use a
