@@ -1710,10 +1710,14 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
   const ctx = use()
   const display = createMemo(() => toolDisplay(props.part.tool))
 
-  // Hide tool if showDetails is false and tool completed successfully
+  // Hide tool if showDetails is false and tool completed successfully.
+  // Completed edits keep their diff visible: otherwise the change flashes
+  // while running and vanishes on completion.
   const shouldHide = createMemo(() => {
     if (ctx.showDetails()) return false
     if (props.part.state.status !== "completed") return false
+    const metadata = props.part.state.metadata as Record<string, unknown> | undefined
+    if (metadata && typeof metadata.diff === "string" && metadata.diff.length > 0) return false
     return true
   })
 
