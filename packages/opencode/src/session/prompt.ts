@@ -102,6 +102,7 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
+  readonly notify: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
   readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
   readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -146,6 +147,7 @@ const layer = Layer.effect(
         cancel: (sessionID: SessionID) => cancel(sessionID),
         resolvePromptParts: (template: string) => resolvePromptParts(template),
         prompt: (input: PromptInput) => prompt(input).pipe(Effect.catch(Effect.die)),
+        notify: (input: PromptInput) => notifyCompletion(input).pipe(Effect.catch(Effect.die)),
       } satisfies TaskPromptOps
     })
 
@@ -1070,6 +1072,41 @@ const layer = Layer.effect(
       return yield* loop({ sessionID: input.sessionID })
     })
 
+    const notifyCompletion: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
+      "SessionPrompt.notifyCompletion",
+    )(function* (input: PromptInput) {
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      yield* revert.cleanup(session)
+      const message = yield* createUserMessage(input)
+      yield* sessions.touch(input.sessionID)
+      // Detached drain with one follow-up pass. If the parent is busy, its
+      // running loop picks the new message up on its next reload; if it
+      // already exited (write landed after its final check), the follow-up
+      // starts a fresh drain. The follow-up exits immediately when there is
+      // nothing to do (exit check precedes any model call), so the common
+      // case costs one extra DB read, not one extra LLM call.
+      yield* Effect.gen(function* () {
+        yield* loop({ sessionID: input.sessionID })
+        const msgs = yield* MessageV2.filterCompactedEffect(input.sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        const { user: lastUser, assistant: lastAssistant } = MessageV2.latest(msgs)
+        if (!lastUser || lastUser.id !== message.info.id) return
+        const answered =
+          !!lastAssistant &&
+          lastAssistant.parentID === lastUser.id &&
+          !!lastAssistant.finish &&
+          !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
+          !(msgs
+            .findLast((msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant.id)
+            ?.parts.some(
+              (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+            ) ?? false)
+        if (!answered) yield* loop({ sessionID: input.sessionID })
+      }).pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
+      return message
+    })
+
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
       const match = yield* sessions.findMessage(sessionID, (m) => m.info.role !== "user").pipe(Effect.orDie)
       if (Option.isSome(match)) return match.value
@@ -1483,6 +1520,7 @@ const layer = Layer.effect(
     return Service.of({
       cancel,
       prompt,
+      notify: notifyCompletion,
       loop,
       shell,
       command,

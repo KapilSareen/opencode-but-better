@@ -1,6 +1,5 @@
 import * as Tool from "./tool"
 import DESCRIPTION from "./task.txt"
-import { ToolJsonSchema } from "./json-schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { BackgroundJob } from "@/background/job"
 import { Session } from "@/session/session"
@@ -10,35 +9,53 @@ import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Effect, Exit, Schema, Scope } from "effect"
+import { Effect, Exit, Option, Schema, Scope, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
+import { InstanceState } from "@/effect/instance-state"
+import { InstanceRef } from "@/effect/instance-ref"
+import { ChildProcess } from "effect/unstable/process"
+import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
+import { existsSync } from "node:fs"
+import os from "os"
+import path from "path"
+import { ulid } from "ulid"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): Effect.Effect<void>
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<SessionV1.WithParts>
+  /**
+   * Detached completion delivery: durably records the notification as a user
+   * message, then ensures the parent drains it without parking behind a busy
+   * run. Optional so older providers fall back to prompt().
+   */
+  notify?: (input: SessionPrompt.PromptInput) => Effect.Effect<SessionV1.WithParts>
 }
 
 const id = "task"
 const BACKGROUND_DESCRIPTION = [
   "Background mode: background=true launches the subagent asynchronously and returns immediately.",
-  "Foreground is the default; use it when you need the result before continuing.",
-  "Use background only for independent work that can run while you continue elsewhere.",
-  "You will be notified automatically when it finishes.",
+  "Prefer background=true for independent work that can run while you continue elsewhere; use foreground only when you need the result before continuing.",
+  "You will be notified automatically when a background task finishes.",
 ].join(" ")
 const BACKGROUND_STARTED = [
   "The task is working in the background. You will be notified automatically when it finishes.",
-  "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
+  "DO NOT sleep or duplicate this task's work — avoid working with the same files or topics it is using.",
+  "To check progress, use background tail sparingly; the child may also send milestone notes via notify_parent.",
   "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
 ].join("\n")
 const BACKGROUND_UPDATED = [
   "Additional context sent to the running background task.",
   "The task is still working in the background. You will be notified automatically when it finishes.",
-  "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
+  "DO NOT sleep or duplicate this task's work — avoid working with the same files or topics it is using. Check progress with background tail sparingly.",
   "Work on non-overlapping tasks, or briefly tell the user what you sent and end your response.",
 ].join("\n")
+
+// Foreground budget before a task upgrades to background instead of hanging
+// the parent. A stuck child (e.g. infinite 429 retry) must not park the
+// parent's tool fiber forever; completion still notifies via inject().
+export const FOREGROUND_TASK_TIMEOUT_MS = 10 * 60 * 1000
 
 const BaseParameterFields = {
   description: Schema.String.annotate({ description: "A short (3-5 words) description of the task" }),
@@ -50,8 +67,6 @@ const BaseParameterFields = {
   }),
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
-
-const BaseParameters = Schema.Struct(BaseParameterFields)
 
 export const Parameters = Schema.Struct({
   ...BaseParameterFields,
@@ -86,20 +101,16 @@ export const TaskTool = Tool.define(
     const config = yield* Config.Service
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
-    const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const spawner = yield* ChildProcessSpawner
 
     const run = Effect.fn("TaskTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
+      // Fork default: background subagents are always available, no experimental flag.
       const runInBackground = params.background === true
-      if (runInBackground && !flags.experimentalBackgroundSubagents) {
-        return yield* Effect.fail(
-          new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
-        )
-      }
 
       const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
@@ -147,18 +158,114 @@ export const TaskTool = Tool.define(
         ...(next.permission.some((rule) => rule.permission === id)
           ? []
           : [{ permission: id, pattern: "*" as const, action: "deny" as const }]),
+        ...(next.permission.some((rule) => rule.permission === "background")
+          ? []
+          : [{ permission: "background" as const, pattern: "*" as const, action: "deny" as const }]),
+        ...(next.permission.some((rule) => rule.permission === "monitor")
+          ? []
+          : [{ permission: "monitor" as const, pattern: "*" as const, action: "deny" as const }]),
         ...(cfg.experimental?.primary_tools?.map((permission) => ({
           permission,
           pattern: "*" as const,
           action: "deny" as const,
         })) ?? []),
       ]
+      const git = Effect.fn("TaskTool.worktreeGit")(function* (args: string[], cwd: string) {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const handle = yield* spawner.spawn(ChildProcess.make("git", args, { cwd, stdin: "ignore" }))
+            const output = yield* Stream.mkString(Stream.decodeText(handle.stdout))
+            const errors = yield* Stream.mkString(Stream.decodeText(handle.stderr))
+            const code = yield* handle.exitCode
+            return { output: output.trim(), errors: errors.trim(), code }
+          }),
+        )
+      })
+
+      const setupWorktree = Effect.fn("TaskTool.setupWorktree")(function* (
+        agentName: string,
+        opts?: { explicit?: boolean },
+      ) {
+        const parentDir = yield* InstanceState.directory
+        const top = yield* git(["rev-parse", "--show-toplevel"], parentDir)
+        if (top.code !== 0 || !top.output) {
+          // Fork default is worktree isolation; outside git there is nothing to
+          // isolate with, so fall back to the shared directory unless the agent
+          // explicitly demanded a worktree.
+          if (!opts?.explicit) {
+            yield* Effect.logWarning("worktree isolation unavailable, sharing parent directory", {
+              agent: agentName,
+              directory: parentDir,
+              error: top.errors || "rev-parse failed",
+            })
+            return undefined
+          }
+          return yield* Effect.fail(
+            new Error(
+              `Agent "${agentName}" requires isolation "worktree", but the project is not a git repository (${top.errors || "rev-parse failed"}). Set isolation to "off" to run in the shared directory.`,
+            ),
+          )
+        }
+        const dir = path.join(os.tmpdir(), `opencode-agent-${ulid().toLowerCase()}`)
+        const added = yield* git(["worktree", "add", "--detach", dir, "HEAD"], top.output)
+        if (added.code !== 0) {
+          return yield* Effect.fail(
+            new Error(`Failed to create worktree for agent "${agentName}": ${added.errors || added.output}`),
+          )
+        }
+        return dir
+      })
+
+      // Returns the kept directory when it has uncommitted changes, undefined
+      // when it was removed. Never fails: cleanup problems keep the directory
+      // and let the caller report it.
+      const cleanupWorktree = Effect.fn("TaskTool.cleanupWorktree")(function* (dir: string) {
+        const parentDir = yield* InstanceState.directory
+        const top = yield* git(["rev-parse", "--show-toplevel"], parentDir).pipe(
+          Effect.orElseSucceed(() => ({ output: parentDir, errors: "", code: 0 as const })),
+        )
+        const status = yield* git(["-C", dir, "status", "--porcelain"], top.output).pipe(
+          Effect.orElseSucceed(() => ({ output: "", errors: "status failed", code: 1 as const })),
+        )
+        if (status.code !== 0) {
+          const gone = yield* Effect.sync(() => !existsSync(dir))
+          if (gone) return undefined
+          yield* Effect.logWarning("worktree status failed, keeping directory", { dir, error: status.errors })
+          return dir
+        }
+        if (status.output.length > 0) return dir
+        const removed = yield* git(["worktree", "remove", "--force", dir], top.output).pipe(
+          Effect.orElseSucceed(() => ({ output: "", errors: "remove failed", code: 1 as const })),
+        )
+        if (removed.code !== 0) {
+          yield* Effect.logWarning("worktree remove failed, keeping directory", { dir, error: removed.errors })
+          return dir
+        }
+        return undefined
+      })
+
+      // Fork default: subagents run in a detached linked worktree and run their
+      // whole drain under that directory. "off" opts out. Resumed tasks reuse
+      // the worktree recorded on the child session.
+      const isolated = (next.isolation ?? "worktree") === "worktree"
+      const explicitIsolation = next.isolation === "worktree"
+      const existingWorktree =
+        isolated && session?.metadata && typeof session.metadata === "object"
+          ? (session.metadata as Record<string, unknown>).worktree
+          : undefined
+      const worktreeDir =
+        isolated && typeof existingWorktree === "string" && existingWorktree.length > 0
+          ? existingWorktree
+          : isolated
+            ? yield* setupWorktree(next.name, { explicit: explicitIsolation })
+            : undefined
       const nextSession =
         session ??
         (yield* sessions.create({
           parentID: ctx.sessionID,
           title: params.description + ` (@${next.name} subagent)`,
           agent: next.name,
+          ...(worktreeDir ? { metadata: { worktree: worktreeDir } } : {}),
           permission: [
             ...childPermission,
             ...childToolDenies.filter(
@@ -197,19 +304,45 @@ export const TaskTool = Tool.define(
       const ops = ctx.extra?.promptOps as TaskPromptOps
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
+      // All child-session operations run under the child's directory so a
+      // worktree-isolated drain joins the same runner/loop as its notifications.
+      // This is a lightweight ambient override (same project, different cwd),
+      // not a full project load: no new layer dependencies, no extra teardown.
+      const parentCtx = yield* InstanceState.context
+      const inChildContext = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        worktreeDir
+          ? effect.pipe(
+              Effect.provideService(
+                InstanceRef,
+                worktreeDir === parentCtx.directory ? parentCtx : { ...parentCtx, directory: worktreeDir, worktree: worktreeDir },
+              ),
+            )
+          : effect
+      const cancelChild = inChildContext(ops.cancel(nextSession.id))
+
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         const parts = yield* ops.resolvePromptParts(params.prompt)
-        const result = yield* ops.prompt({
-          messageID: MessageID.ascending(),
-          sessionID: nextSession.id,
-          model: {
-            modelID: model.modelID,
-            providerID: model.providerID,
-          },
-          variant: next.model ? undefined : variant,
-          agent: next.name,
-          parts,
-        })
+        const run = inChildContext(
+          ops.prompt({
+            messageID: MessageID.ascending(),
+            sessionID: nextSession.id,
+            model: {
+              modelID: model.modelID,
+              providerID: model.providerID,
+            },
+            variant: next.model ? undefined : variant,
+            agent: next.name,
+            parts,
+          }),
+        )
+        // Capture the outcome first so worktree cleanup runs on success,
+        // failure, and interruption alike, then re-raise.
+        const exit = yield* run.pipe(Effect.exit)
+        const keptDir = worktreeDir
+          ? yield* cleanupWorktree(worktreeDir).pipe(Effect.catchCause(() => Effect.succeed(worktreeDir)))
+          : undefined
+        if (keptDir) yield* Effect.logWarning("isolated subagent worktree kept", { dir: keptDir, task: nextSession.id })
+        const result = yield* exit
         if (result.info.role === "assistant" && result.info.error) {
           const message =
             "message" in result.info.error.data && typeof result.info.error.data.message === "string"
@@ -221,7 +354,9 @@ export const TaskTool = Tool.define(
         if (failed?.type === "tool" && failed.state.status === "error") {
           return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${failed.state.error}`))
         }
-        return result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        const text = result.parts.findLast((item) => item.type === "text")?.text ?? ""
+        if (keptDir) return `${text}\n\nNote: worktree kept at ${keptDir} (has uncommitted changes).`
+        return text
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
@@ -229,28 +364,35 @@ export const TaskTool = Tool.define(
         text: string,
       ) {
         const currentParent = yield* sessions.get(ctx.sessionID)
-        yield* ops
-          .prompt({
-            sessionID: ctx.sessionID,
-            agent: currentParent.agent ?? ctx.agent,
-            variant,
-            parts: [
-              {
-                type: "text",
-                synthetic: true,
-                text: renderOutput({
-                  sessionID: nextSession.id,
-                  state,
-                  summary:
-                    state === "completed"
-                      ? `Background task completed: ${params.description}`
-                      : `Background task failed: ${params.description}`,
-                  text,
-                }),
-              },
-            ],
-          })
-          .pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
+        const input: SessionPrompt.PromptInput = {
+          sessionID: ctx.sessionID,
+          agent: currentParent.agent ?? ctx.agent,
+          variant,
+          parts: [
+            {
+              type: "text",
+              synthetic: true,
+              text: renderOutput({
+                sessionID: nextSession.id,
+                state,
+                summary:
+                  state === "completed"
+                    ? `Background task completed: ${params.description}`
+                    : `Background task failed: ${params.description}`,
+                text,
+              }),
+            },
+          ],
+        }
+        // Preferred path writes the message durably, then drains detached: a
+        // busy parent picks it up on its next reload, an idle parent starts a
+        // fresh drain. The legacy prompt() path parks behind ensureRunning
+        // when busy and may never drain after the parent exits (lost notice).
+        if (ops.notify) {
+          yield* ops.notify(input).pipe(Effect.ignore)
+          return
+        }
+        yield* ops.prompt(input).pipe(Effect.ignore, Effect.forkIn(scope, { startImmediately: true }))
       })
 
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
@@ -293,7 +435,7 @@ export const TaskTool = Tool.define(
           }),
           notify(nextSession.id),
         ]),
-        run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
+        run: runTask().pipe(Effect.onInterrupt(() => cancelChild)),
       })
 
       function backgroundResult() {
@@ -308,7 +450,7 @@ export const TaskTool = Tool.define(
             sessionID: nextSession.id,
             state: "running",
             summary: "Background task started",
-            text: BACKGROUND_STARTED,
+            text: worktreeDir ? `${BACKGROUND_STARTED}\nWorking directory: ${worktreeDir}` : BACKGROUND_STARTED,
           }),
         }
       }
@@ -319,7 +461,7 @@ export const TaskTool = Tool.define(
       }
 
       const runCancel = yield* EffectBridge.make()
-      const cancel = ops.cancel(nextSession.id)
+      const cancel = cancelChild
 
       function onAbort() {
         runCancel.fork(cancel)
@@ -331,10 +473,19 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const result = yield* Effect.raceFirst(
+            const outcome = yield* Effect.raceFirst(
               background.wait({ id: nextSession.id }).pipe(Effect.map((waited) => waited.info)),
               background.waitForPromotion(nextSession.id),
-            )
+            ).pipe(Effect.timeoutOption(FOREGROUND_TASK_TIMEOUT_MS))
+            if (Option.isNone(outcome)) {
+              // Foreground budget exhausted (e.g. child stuck retrying): upgrade
+              // to background instead of hanging the parent forever. The child
+              // keeps running and completion still notifies via inject().
+              yield* background.promote(nextSession.id).pipe(Effect.ignore)
+              yield* notify(nextSession.id)
+              return backgroundResult()
+            }
+            const result = outcome.value
             if (result?.metadata?.background === true) return backgroundResult()
             if (result?.status === "error") return yield* Effect.fail(new Error(result.error ?? "Task failed"))
             if (result?.status === "cancelled") return yield* Effect.fail(new Error("Task cancelled"))
@@ -358,12 +509,11 @@ export const TaskTool = Tool.define(
       )
     })
 
+    // Fork default: background mode is always described and always available.
     return {
-      description: flags.experimentalBackgroundSubagents
-        ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
-        : DESCRIPTION,
+      description: [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n"),
       parameters: Parameters,
-      jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(BaseParameters),
+      jsonSchema: undefined,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         run(params, ctx).pipe(Effect.orDie),
     }
