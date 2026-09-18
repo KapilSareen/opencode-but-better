@@ -230,7 +230,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
-      yield* promptSvc.cancel(ctx.params.sessionID)
+      // User interrupt (ESC): stop the turn, then drain queued input.
+      yield* promptSvc.cancel(ctx.params.sessionID, { drain: true })
       return true
     })
 

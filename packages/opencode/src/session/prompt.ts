@@ -99,8 +99,31 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+// Mirrors runLoop's exit predicate: true when the latest user message still
+// needs a model turn (fresh input, unfinished tool flow, or pending tools).
+export function hasUnansweredInput(msgs: SessionV1.WithParts[]): boolean {
+  const { user: lastUser, assistant: lastAssistant } = MessageV2.latest(msgs)
+  if (!lastUser) return false
+  const lastAssistantMsg = msgs.findLast(
+    (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
+  )
+  const hasToolCalls =
+    lastAssistantMsg?.parts.some(
+      (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+    ) ?? false
+  if (
+    lastAssistant?.finish &&
+    !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
+    !hasToolCalls &&
+    lastAssistant.parentID === lastUser.id
+  ) {
+    return false
+  }
+  return true
+}
+
 export interface Interface {
-  readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  readonly cancel: (sessionID: SessionID, opts?: { drain?: boolean }) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly notify: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
   readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
@@ -151,9 +174,24 @@ const layer = Layer.effect(
       } satisfies TaskPromptOps
     })
 
-    const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
+    const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID, opts?: { drain?: boolean }) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       yield* state.cancel(sessionID)
+      if (opts?.drain !== true) return
+      // User-interrupt semantics (ESC): the current turn stops, but input the
+      // user queued while busy still drains instead of stranding. Programmatic
+      // aborts (task cancel/kill) omit the flag so stopped work stays stopped.
+      yield* Effect.gen(function* () {
+        const msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
+          Effect.provideService(Database.Service, database),
+        )
+        if (hasUnansweredInput(msgs)) yield* loop({ sessionID })
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("post-cancel drain failed", { "session.id": sessionID, error: String(cause) }),
+        ),
+        Effect.forkIn(scope, { startImmediately: true }),
+      )
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
