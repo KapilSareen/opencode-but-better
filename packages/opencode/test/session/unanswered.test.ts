@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { MessageID, PartID } from "../../src/session/schema"
+import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { hasUnansweredInput } from "../../src/session/prompt"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -16,7 +16,7 @@ function user(overrides?: Partial<SessionV1.User>): SessionV1.WithParts {
     info: {
       id,
       role: "user",
-      sessionID: "ses_test",
+      sessionID: SessionID.make("ses_test"),
       time: { created: Date.now() },
       agent: "build",
       model: ref,
@@ -26,7 +26,7 @@ function user(overrides?: Partial<SessionV1.User>): SessionV1.WithParts {
       {
         id: PartID.ascending(),
         messageID: id,
-        sessionID: "ses_test",
+        sessionID: SessionID.make("ses_test"),
         type: "text",
         text: "hello",
       },
@@ -41,7 +41,7 @@ function assistant(parentID: string, finish?: string, tools?: SessionV1.ToolPart
       id,
       role: "assistant",
       parentID: parentID as SessionV1.Assistant["parentID"],
-      sessionID: "ses_test",
+      sessionID: SessionID.make("ses_test"),
       mode: "build",
       agent: "build",
       cost: 0,
@@ -56,7 +56,7 @@ function assistant(parentID: string, finish?: string, tools?: SessionV1.ToolPart
       {
         id: PartID.ascending(),
         messageID: id,
-        sessionID: "ses_test",
+        sessionID: SessionID.make("ses_test"),
         type: "text",
         text: "done",
       },
@@ -70,7 +70,7 @@ function toolPart(status: "running" | "error", interrupted = false): SessionV1.T
   return {
     id: PartID.ascending(),
     messageID,
-    sessionID: "ses_test",
+    sessionID: SessionID.make("ses_test"),
     type: "tool",
     callID: "call-1",
     tool: "read",

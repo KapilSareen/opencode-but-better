@@ -1,3 +1,5 @@
+> **opencode-but-better** — an opinionated fork of opencode on the [`better`](https://github.com/KapilSareen/opencode-but-better/tree/better) branch: non-blocking background subagents, persistent monitors, cron scheduling, keep-alive sleep, worktree isolation, bidirectional parent↔child messaging, ESC-drains-queue, and persistent diffs. [Install this fork](#installing-opencode-but-better) · [What's different](#whats-different-in-this-fork)
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>
@@ -63,6 +65,61 @@ nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev
 
 > [!TIP]
 > Remove versions older than 0.1.x before installing.
+
+### Installing opencode-but-better (this fork)
+
+No package managers ship the fork — build it from source (takes a few minutes, embeds the web UI):
+
+```bash
+git clone -b better https://github.com/KapilSareen/opencode-but-better.git
+cd opencode-but-better
+bun install
+bun run --cwd packages/opencode script/build.ts --single --skip-install
+# binary lands at packages/opencode/dist/<platform>-<arch>/bin/opencode
+```
+
+Run it side-by-side with upstream `opencode` under an isolated profile (separate
+config, sessions, cache — shared API keys), e.g. as `~/.local/bin/opencode-fork`:
+
+```sh
+#!/bin/sh
+export XDG_DATA_HOME="$HOME/.opencode-fork/data"
+export XDG_STATE_HOME="$HOME/.opencode-fork/state"
+export XDG_CACHE_HOME="$HOME/.opencode-fork/cache"
+export XDG_CONFIG_HOME="$HOME/.opencode-fork/config"
+export OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true
+exec /path/to/opencode-but-better/packages/opencode/dist/opencode-linux-x64/bin/opencode "$@"
+```
+
+Then point the fork at your existing keys and a working default model:
+
+```bash
+mkdir -p ~/.opencode-fork/data/opencode
+ln -sf ~/.local/share/opencode/auth.json ~/.opencode-fork/data/opencode/auth.json
+opencode-fork auth login   # only if the link above doesn't cover your provider
+```
+
+Notes:
+
+- Project-local `.opencode/` directories are shared with upstream by design;
+  global config, sessions/DB, cache, and state are split.
+- If you serve both at once, give them different ports (`serve --port ...`).
+
+### What's different in this fork
+
+- **Non-blocking background subagents** — parents stay interactive; completion
+  notices inject mid-drain without breaking state or caches.
+- **`background` tool** — `status` (spend, tokens, recent activity), `send`,
+  `kill`, `list`, `tail`, `detach` (model-callable Ctrl+B), by `task_id` or `name`.
+- **`monitor` tool + service** — watch a process, stream matching lines into a
+  session; process-group kill so orphans can't hang it.
+- **`notify_parent`** — running children can push milestones to their parent.
+- **`sleep`** — keep-alive wait with early wake on new input. **`cron`** —
+  scheduled messages into sessions (in-memory).
+- **Worktree isolation (default on)** — subagents work in detached git
+  worktrees, auto-removed when clean; `"isolation": "off"` opts out.
+- **ESC drains queued input** instead of stranding it.
+- **Completed diffs stay visible** in the TUI when tool details are hidden.
 
 ### Desktop App (BETA)
 
