@@ -16,14 +16,17 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
-import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
+import { FOREGROUND_TASK_TIMEOUT_MS, TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { disposeAllInstances } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
+import { pollWithTimeout, testEffect } from "../lib/effect"
+import * as TestClock from "effect/testing/TestClock"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { existsSync } from "node:fs"
+import path from "path"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -623,6 +626,16 @@ describe("tool.task", () => {
             action: "deny",
           },
           {
+            permission: "background",
+            pattern: "*",
+            action: "deny",
+          },
+          {
+            permission: "monitor",
+            pattern: "*",
+            action: "deny",
+          },
+          {
             permission: "bash",
             pattern: "*",
             action: "deny",
@@ -652,34 +665,40 @@ describe("tool.task", () => {
     },
   )
 
-  it.instance("rejects background execution when the experiment is disabled", () =>
+  it.instance("allows background execution without any experiment flag (fork default)", () =>
     Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
       const def = yield* tool.init()
 
-      const exit = yield* def
-        .execute(
-          {
-            description: "inspect bug",
-            prompt: "look into the cache key path",
-            subagent_type: "general",
-            background: true,
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: {
+              ...stubOps(),
+              prompt: () => Effect.never,
+            } satisfies TaskPromptOps,
           },
-          {
-            sessionID: chat.id,
-            messageID: assistant.id,
-            agent: "build",
-            abort: new AbortController().signal,
-            extra: { promptOps: stubOps() },
-            messages: [],
-            metadata: () => Effect.void,
-            ask: () => Effect.void,
-          },
-        )
-        .pipe(Effect.exit)
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
 
-      expect(Exit.isFailure(exit)).toBe(true)
+      expect(result.metadata.background).toBe(true)
+      expect(result.output).toContain(`state="running"`)
+      expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
     }),
   )
 
@@ -1098,4 +1117,233 @@ describe("tool.task", () => {
       expect((yield* jobs.get(grandchild.id))?.status).toBe("cancelled")
     }),
   )
+
+  background.instance("background completion prefers ops.notify over prompt", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const notified: SessionPrompt.PromptInput[] = []
+      let parentPrompts = 0
+      const childOps = stubOps({ text: "background done" })
+      const promptOps: TaskPromptOps = {
+        ...childOps,
+        notify: (input) =>
+          Effect.sync(() => {
+            notified.push(input)
+            return reply(input, "notified")
+          }),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            parentPrompts += 1
+            return Effect.succeed(reply(input, "parent"))
+          }
+          return childOps.prompt(input)
+        },
+      }
+
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 5_000 })
+      expect(waited.info?.status).toBe("completed")
+      yield* pollWithTimeout(
+        Effect.sync(() => (notified.length === 1 ? (true as const) : undefined)),
+        "background completion never called ops.notify",
+      )
+      expect(notified[0]?.sessionID).toBe(chat.id)
+      expect(notified[0]?.parts[0]?.type).toBe("text")
+      if (notified[0]?.parts[0]?.type === "text") {
+        expect(notified[0].parts[0].text).toContain("background done")
+        expect(notified[0].parts[0].text).toContain(`state="completed"`)
+      }
+      expect(parentPrompts).toBe(0)
+    }),
+  )
 })
+
+  it.instance(
+    "isolated subagent runs in a worktree and cleans up when clean",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const agent = yield* Agent.Service
+        expect((yield* agent.get("worker"))?.isolation).toBe("worktree")
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "worker",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ text: "worker done" }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        const child = yield* sessions.get(result.metadata.sessionId)
+        const dir = (child.metadata as Record<string, unknown> | undefined)?.worktree
+        expect(typeof dir).toBe("string")
+        expect(result.output).toContain("worker done")
+        expect(result.output).not.toContain("worktree kept")
+        expect(existsSync(dir as string)).toBe(false)
+      }),
+    { git: true, config: { agent: { worker: { mode: "subagent", isolation: "worktree" } } } },
+  )
+
+  it.instance(
+    "isolated subagent keeps a dirty worktree and reports it",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const promptOps: TaskPromptOps = {
+          ...stubOps(),
+          prompt: (input) =>
+            Effect.gen(function* () {
+              const kid = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+              const dir = (kid.metadata as Record<string, unknown> | undefined)?.worktree as string
+              yield* Effect.promise(() => Bun.write(path.join(dir, "scratch.txt"), "dirty").then(() => undefined))
+              return reply(input, "worker done")
+            }),
+        }
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "worker",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        const child = yield* sessions.get(result.metadata.sessionId)
+        const dir = (child.metadata as Record<string, unknown> | undefined)?.worktree as string
+        expect(result.output).toContain("worker done")
+        expect(result.output).toContain(`worktree kept at ${dir}`)
+        expect(existsSync(dir)).toBe(true)
+        expect(existsSync(path.join(dir, "scratch.txt"))).toBe(true)
+      }),
+    { git: true, config: { agent: { worker: { mode: "subagent", isolation: "worktree" } } } },
+  )
+
+  it.instance(
+    "isolated subagent fails fast outside a git repository",
+    () =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "worker",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isSuccess(exit)) throw new Error("expected isolation failure")
+        expect(String(Cause.squash(exit.cause))).toContain("not a git repository")
+      }),
+    { config: { agent: { worker: { mode: "subagent", isolation: "worktree" } } } },
+  )
+
+const clocked = testEffect(layer({ experimentalBackgroundSubagents: true }))
+
+clocked.effect("foreground task upgrades to background on timeout", () =>
+  provideTmpdirInstance(() =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const started = yield* Deferred.make<void>()
+      const promptOps: TaskPromptOps = {
+        cancel: () => Effect.void,
+        resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
+        prompt: (): Effect.Effect<SessionV1.WithParts> =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(started, undefined)
+            return yield* Effect.never
+          }),
+        notify: (input) => Effect.succeed(reply(input, "notified")),
+      }
+
+      const fiber = yield* def
+        .execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(started)
+      yield* Effect.yieldNow
+      yield* Effect.yieldNow
+      yield* TestClock.adjust(FOREGROUND_TASK_TIMEOUT_MS + 60_000)
+
+      const result = yield* Fiber.join(fiber)
+      expect(result.metadata.background).toBe(true)
+      expect(result.output).toContain(`state="running"`)
+      expect((yield* jobs.get(result.metadata.sessionId))?.status).toBe("running")
+    }),
+  ),
+)

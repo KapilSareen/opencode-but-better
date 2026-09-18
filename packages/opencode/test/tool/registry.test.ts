@@ -100,6 +100,17 @@ afterEach(async () => {
 })
 
 describe("tool.registry", () => {
+  it.instance("exposes background, monitor, and notify_parent by default", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).toContain("background")
+      expect(ids).toContain("monitor")
+      expect(ids).toContain("notify_parent")
+    }),
+  )
+
   it.instance("does not expose task_status", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
@@ -150,7 +161,7 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("hides task background parameter unless experimental background subagents are enabled", () =>
+  it.instance("exposes task background parameter by default (fork: no experimental flag)", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const agent = yield* Agent.Service
@@ -162,8 +173,8 @@ describe("tool.registry", () => {
         agent: build,
       })).find((tool) => tool.id === "task")
 
-      expect(task?.jsonSchema).toBeDefined()
-      expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeUndefined()
+      expect(task?.jsonSchema).toBeUndefined()
+      expect(task?.description).toContain("background=true")
     }),
   )
 
