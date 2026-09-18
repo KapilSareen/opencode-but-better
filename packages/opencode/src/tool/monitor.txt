@@ -1,0 +1,9 @@
+Watch an external process and wake a session when it produces output.
+
+Actions:
+- start: run a shell command as a monitor. Every stdout line matching pattern (JS RegExp) is delivered into the target session as a notification. Without pattern, only process completion notifies. The monitor keeps running in the background until it exits or is stopped.
+- stop: kill a running monitor.
+- status: report a monitor's state with its recent output tail.
+- list: list monitors started in this project.
+
+target_session defaults to the calling session. Monitors survive the tool call that started them but not process restarts. Subagents cannot use this tool.

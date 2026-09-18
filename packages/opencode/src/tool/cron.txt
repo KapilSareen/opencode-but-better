@@ -1,0 +1,9 @@
+Run a message into a session on a schedule.
+
+Actions:
+- create: schedule a 5-field cron expression (local time: minute hour day-of-month month day-of-week, e.g. "*/15 * * * *" every 15 minutes). Each fire delivers message into the target session as a notification. once: true fires a single time at the next match then stops.
+- list: list scheduled jobs with next fire times.
+- status: report one job.
+- delete: remove a job. Stopped jobs never fire again.
+
+Jobs are in-memory: they die with the process (like background tasks and monitors). Keep at most a handful; cadences below one minute are not supported. Subagents cannot use this tool.

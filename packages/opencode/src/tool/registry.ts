@@ -10,6 +10,11 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { BackgroundTool } from "./background"
+import { MonitorTool } from "./monitor"
+import { NotifyParentTool } from "./notify_parent"
+import { SleepTool } from "./sleep"
+import { CronTool } from "./cron"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -45,6 +50,8 @@ import { Instruction } from "../session/instruction"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
+import { Cron } from "../cron/cron"
+import { Monitor } from "../monitor/monitor"
 import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
@@ -100,6 +107,11 @@ const layer = Layer.effect(
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
+    const background = yield* BackgroundTool
+    const monitorTool = yield* MonitorTool
+    const notifyParent = yield* NotifyParentTool
+    const sleep = yield* SleepTool
+    const cronTool = yield* CronTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -215,6 +227,11 @@ const layer = Layer.effect(
           edit: Tool.init(edit),
           write: Tool.init(writetool),
           task: Tool.init(task),
+          background: Tool.init(background),
+          monitor: Tool.init(monitorTool),
+          notifyParent: Tool.init(notifyParent),
+          sleep: Tool.init(sleep),
+          cron: Tool.init(cronTool),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -238,6 +255,11 @@ const layer = Layer.effect(
             tool.edit,
             tool.write,
             tool.task,
+            tool.background,
+            tool.monitor,
+            tool.notifyParent,
+            tool.sleep,
+            tool.cron,
             tool.fetch,
             tool.todo,
             tool.search,
@@ -436,6 +458,8 @@ export const node = LayerNode.make({
     Skill.node,
     Session.node,
     BackgroundJob.node,
+    Cron.node,
+    Monitor.node,
     Provider.node,
     LSP.node,
     Instruction.node,

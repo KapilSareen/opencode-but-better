@@ -1,0 +1,13 @@
+Manage background subagent tasks spawned by the task tool in this session.
+
+Actions:
+- status: report a child task's state (running, completed, error, cancelled) with its latest output.
+- send: deliver an additional message into a RUNNING child task. The child picks it up at its next step boundary. Use this to steer or add context without waiting.
+- kill: stop a running child task. The child is interrupted and its session is cancelled.
+- list: list child tasks spawned by this session with their states.
+- tail: read a child task's recent activity (roles, text, tool calls) without disturbing it. Pull sparingly; prefer waiting for its milestone notes and completion notice.
+- detach: move a RUNNING foreground task to the background (the model-callable Ctrl+B). Returns immediately; completion still notifies automatically.
+
+Child tasks can also push you milestone notes mid-run via notify_parent; those arrive the same way completion notices do.
+
+task_id is the child session ID found in the task tool result metadata (sessionId) and in <task id="..."> tags. Only direct child tasks of the calling session can be controlled. Subagents cannot use this tool.

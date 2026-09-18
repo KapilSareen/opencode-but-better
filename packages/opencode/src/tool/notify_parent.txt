@@ -1,0 +1,5 @@
+Send a progress note to your parent session while you keep running.
+
+Use this for milestones, blockers, or early results the parent should know about now — not for every step. The parent picks the note up at its next step boundary and continues its own work; it does not interrupt you, and you do not wait for a reply. Keep running after calling this.
+
+Only direct child tasks (spawned by the task tool) can use this. It always targets the session that spawned you.

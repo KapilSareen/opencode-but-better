@@ -1,0 +1,5 @@
+Wait for a specified duration while staying responsive.
+
+Use this when waiting for something: a background task, a monitor event, or a user reply. The sleep ends early the moment new input arrives in this session (returns woken: true) or the user interrupts. Prefer this over Bash sleep: it holds no shell process, costs nothing while parked, and wakes the agent the instant there is work to do.
+
+You can call this concurrently with other tools — it won't interfere with them.
