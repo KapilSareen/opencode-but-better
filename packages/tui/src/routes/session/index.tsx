@@ -1657,10 +1657,7 @@ function ReasoningHeader(props: {
   encrypted?: boolean
 }) {
   const { theme } = useTheme()
-  const fg = () =>
-    props.open
-      ? RGBA.fromValues(theme.warning.r, theme.warning.g, theme.warning.b, theme.thinkingOpacity)
-      : theme.warning
+  const fg = () => theme.text
   const completed = () => {
     if (props.encrypted) return `Thought${props.duration ? ` · ${props.duration}` : ""}`
     const detail = [props.title, props.duration].filter(Boolean).join(" · ")
