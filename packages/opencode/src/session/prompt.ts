@@ -99,27 +99,16 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
-// Mirrors runLoop's exit predicate: true when the latest user message still
-// needs a model turn (fresh input, unfinished tool flow, or pending tools).
+// True when the latest user message has no assistant turn yet. Used after a
+// user interrupt (ESC): queued input drains, but an interrupted or running
+// turn is never restarted — ESC means stop. In particular an aborted assistant
+// (error set, no finish) counts as answered for its own input; only a newer
+// user message without an assistant triggers a drain.
 export function hasUnansweredInput(msgs: SessionV1.WithParts[]): boolean {
   const { user: lastUser, assistant: lastAssistant } = MessageV2.latest(msgs)
   if (!lastUser) return false
-  const lastAssistantMsg = msgs.findLast(
-    (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
-  )
-  const hasToolCalls =
-    lastAssistantMsg?.parts.some(
-      (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
-    ) ?? false
-  if (
-    lastAssistant?.finish &&
-    !["tool-calls", "unknown"].includes(lastAssistant.finish) &&
-    !hasToolCalls &&
-    lastAssistant.parentID === lastUser.id
-  ) {
-    return false
-  }
-  return true
+  if (!lastAssistant) return true
+  return lastAssistant.parentID !== lastUser.id
 }
 
 export interface Interface {

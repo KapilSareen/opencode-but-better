@@ -95,16 +95,21 @@ describe("hasUnansweredInput", () => {
     expect(hasUnansweredInput([first, assistant(first.info.id, "stop")])).toBe(false)
   })
 
-  test("tool-calls finish needs a drain", () => {
+  test("tool-calls finish stops on interrupt instead of draining", () => {
     const first = user()
-    expect(hasUnansweredInput([first, assistant(first.info.id, "tool-calls")])).toBe(true)
+    expect(hasUnansweredInput([first, assistant(first.info.id, "tool-calls")])).toBe(false)
   })
 
-  test("pending tool part needs a drain", () => {
+  test("pending tool part stops on interrupt instead of draining", () => {
     const first = user()
     expect(
       hasUnansweredInput([first, assistant(first.info.id, "stop", [toolPart("running")])]),
-    ).toBe(true)
+    ).toBe(false)
+  })
+
+  test("assistant with no finish and matching parent needs nothing", () => {
+    const first = user()
+    expect(hasUnansweredInput([first, assistant(first.info.id)])).toBe(false)
   })
 
   test("orphaned interrupted tool does not need a drain", () => {
