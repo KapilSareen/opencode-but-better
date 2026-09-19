@@ -54,6 +54,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
+import { SessionSideChat } from "./side-chat"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -1081,8 +1082,53 @@ const layer = Layer.effect(
     const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      let session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
+      // Side chats answer against the parent's frozen context. Inherit the
+      // parent's agent/model so the system prompt and tool set match the parent
+      // request byte-for-byte, and pin the cutoff once so the shared prefix
+      // stays cache-stable across follow-ups.
+      const sideParent = SessionSideChat.parentOf(session.metadata)
+      let effective = input
+      if (sideParent) {
+        const parent = yield* sessions
+          .findMessage(sideParent, (m) => m.info.role === "user" && !!m.info.model)
+          .pipe(Effect.orDie)
+        if (Option.isSome(parent) && parent.value.info.role === "user") {
+          effective = {
+            ...input,
+            agent: parent.value.info.agent,
+            model: parent.value.info.model,
+            variant: parent.value.info.model.variant,
+            parts: [...input.parts, { type: "text" as const, text: SessionSideChat.REMINDER, synthetic: true }],
+          }
+        }
+        // Mirror the parent's permission ruleset so tool resolution (and thus
+        // the request tool set) matches the parent request.
+        if (!session.permission?.length) {
+          const parentInfo = yield* sessions.get(sideParent).pipe(Effect.orDie)
+          if (parentInfo.permission?.length) {
+            yield* sessions.setPermission({ sessionID: session.id, permission: parentInfo.permission })
+            session = { ...session, permission: parentInfo.permission }
+          }
+        }
+        if (!SessionSideChat.cutoffOf(session.metadata)) {
+          const parentMsgs = yield* MessageV2.filterCompactedEffect(sideParent).pipe(
+            Effect.provideService(Database.Service, database),
+          )
+          const cutoff = SessionSideChat.lastStableMessageID(parentMsgs)
+          if (cutoff) {
+            const metadata = { ...session.metadata, [SessionSideChat.SIDE_CUTOFF]: cutoff }
+            yield* sessions.setMetadata({ sessionID: session.id, metadata })
+            session = { ...session, metadata }
+          }
+        }
+        // Side chats are always non-blocking. Reuse the completion path: it
+        // persists the question and runs a detached drain with one follow-up
+        // pass, so a question queued while a previous answer is still streaming
+        // is never stranded behind a finishing drain.
+        return yield* notifyCompletion(effective)
+      }
       const message = yield* createUserMessage(input)
       yield* sessions.touch(input.sessionID)
 
@@ -1142,12 +1188,30 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    // Rebuild the frozen parent prefix for a side chat. The cutoff marks the
+    // last parent message that existed when the side chat opened; slicing there
+    // keeps the prefix stable across follow-ups so the provider cache holds.
+    const sideParentMessages = Effect.fnUntraced(function* (
+      parentID: SessionID,
+      cutoff: string | undefined,
+      model: Provider.Model,
+    ) {
+      const parentMsgs = yield* MessageV2.filterCompactedEffect(parentID).pipe(
+        Effect.provideService(Database.Service, database),
+      )
+      const idx = cutoff ? parentMsgs.findIndex((m) => String(m.info.id) === cutoff) : -1
+      const sliced = idx >= 0 ? parentMsgs.slice(0, idx + 1) : parentMsgs
+      return yield* MessageV2.toModelMessagesEffect(sliced, model)
+    })
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        const sideParent = SessionSideChat.parentOf(session.metadata)
+        const isSide = !!sideParent
 
         while (true) {
           yield* status.set(sessionID, { type: "busy" })
@@ -1194,7 +1258,8 @@ const layer = Layer.effect(
           }
 
           step++
-          if (step === 1)
+          if (isSide && step > 1) break
+          if (step === 1 && !isSide)
             yield* title({
               session,
               modelID: lastUser.model.modelID,
@@ -1240,7 +1305,7 @@ const layer = Layer.effect(
             throw error
           }
           const maxSteps = agent.steps ?? Infinity
-          const isLastStep = step >= maxSteps
+          const isLastStep = !isSide && step >= maxSteps
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
@@ -1313,11 +1378,14 @@ const layer = Layer.effect(
               })
             }
 
-            if (step === 1)
+            if (step === 1 && !isSide)
               yield* summary.summarize({ sessionID, messageID: lastUser.id }).pipe(Effect.ignore, Effect.forkIn(scope))
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            const sidePrefix = isSide
+              ? yield* sideParentMessages(sideParent!, SessionSideChat.cutoffOf(session.metadata), model)
+              : []
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
@@ -1341,12 +1409,13 @@ const layer = Layer.effect(
               parentSessionID: session.parentID,
               system,
               messages: [
+                ...sidePrefix,
                 ...modelMsgs,
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,
               model,
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
+              toolChoice: format.type === "json_schema" ? "required" : isSide ? "none" : undefined,
             })
 
             if (structured !== undefined) {

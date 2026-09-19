@@ -65,6 +65,7 @@ import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
+import { SidebarChatProvider } from "./context/sidebar-chat"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
 import { createTuiApiAdapters } from "./plugin/adapters"
 import { createTuiApi } from "./plugin/api"
@@ -313,14 +314,16 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                           <FrecencyProvider>
                                                             <PromptHistoryProvider>
                                                               <PromptRefProvider>
-                                                                <EditorContextProvider>
-                                                                  <LocationProvider>
-                                                                    <App
-                                                                      onSnapshot={input.onSnapshot}
-                                                                      pluginHost={input.pluginHost}
-                                                                    />
-                                                                  </LocationProvider>
-                                                                </EditorContextProvider>
+                                                                <SidebarChatProvider>
+                                                                  <EditorContextProvider>
+                                                                    <LocationProvider>
+                                                                      <App
+                                                                        onSnapshot={input.onSnapshot}
+                                                                        pluginHost={input.pluginHost}
+                                                                      />
+                                                                    </LocationProvider>
+                                                                  </EditorContextProvider>
+                                                                </SidebarChatProvider>
                                                               </PromptRefProvider>
                                                             </PromptHistoryProvider>
                                                           </FrecencyProvider>

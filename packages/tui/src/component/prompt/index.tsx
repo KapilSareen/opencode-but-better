@@ -69,6 +69,7 @@ export type PromptProps = {
   hint?: JSX.Element
   right?: JSX.Element
   showPlaceholder?: boolean
+  focusSuspended?: boolean
   placeholders?: {
     normal?: string[]
     shell?: string[]
@@ -634,7 +635,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || props.focusSuspended === true || dialog.stack.length > 0) {
       if (input.focused) input.blur()
       return
     }

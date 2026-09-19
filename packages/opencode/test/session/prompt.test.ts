@@ -2468,3 +2468,166 @@ noLLMServer.instance(
     }),
   30_000,
 )
+
+// Side chat (/btw)
+
+const seedExchange = Effect.fn("test.seedExchange")(function* (
+  sessionID: SessionID,
+  userText: string,
+  assistantText: string,
+) {
+  const session = yield* Session.Service
+  const msg = yield* user(sessionID, userText)
+  const assistant: SessionV1.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID: msg.id,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now(), completed: Date.now() },
+    finish: "stop",
+  }
+  yield* session.updateMessage(assistant)
+  yield* session.updatePart({
+    id: PartID.ascending(),
+    messageID: assistant.id,
+    sessionID,
+    type: "text",
+    text: assistantText,
+  })
+  return assistant
+})
+
+const allowAll = [{ permission: "*", pattern: "*", action: "allow" as const }]
+
+const waitForAssistantText = (sessionID: SessionID, text: string) =>
+  pollWithTimeout(
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const msgs = yield* sessions.messages({ sessionID })
+      const found = msgs.some(
+        (m) => m.info.role === "assistant" && m.parts.some((p) => p.type === "text" && p.text === text),
+      )
+      return found ? true : undefined
+    }),
+    `assistant text ${text} never persisted`,
+    "10 seconds",
+  )
+
+it.instance(
+  "side chat replays the frozen parent context without touching the parent",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+
+      const parent = yield* sessions.create({ title: "Parent", permission: allowAll })
+      const parentAssistant = yield* seedExchange(parent.id, "PARENT_QUESTION_MARKER", "PARENT_ANSWER_MARKER")
+      const side = yield* sessions.create({
+        parentID: parent.id,
+        title: "Side",
+        metadata: { sideChatOf: parent.id },
+      })
+
+      yield* llm.text("SIDE_ANSWER_MARKER")
+      yield* prompt.prompt({ sessionID: side.id, parts: [{ type: "text", text: "SIDE_QUESTION_MARKER" }] })
+      yield* awaitWithTimeout(llm.wait(1), "side chat never called the model", "10 seconds")
+      yield* waitForAssistantText(side.id, "SIDE_ANSWER_MARKER")
+
+      const hits = yield* llm.hits
+      expect(hits).toHaveLength(1)
+      const body = JSON.stringify(hits[0]!.body)
+      expect(body).toContain("PARENT_QUESTION_MARKER")
+      expect(body).toContain("PARENT_ANSWER_MARKER")
+      expect(body).toContain("SIDE_QUESTION_MARKER")
+      expect(body).toContain("side question from the user")
+      expect(body).toContain('"tool_choice":"none"')
+      expect(body).not.toContain("SIDE_ANSWER_MARKER")
+
+      const sideMsgs = yield* sessions.messages({ sessionID: side.id })
+      expect(sideMsgs).toHaveLength(2)
+
+      const parentMsgs = yield* sessions.messages({ sessionID: parent.id })
+      expect(parentMsgs).toHaveLength(2)
+
+      const sideInfo = yield* sessions.get(side.id)
+      expect(sideInfo.metadata?.sideCutoff).toBe(parentAssistant.id)
+    }),
+  30_000,
+)
+
+it.instance(
+  "side chat follow-up reuses the frozen prefix and prior side turns",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+
+      const parent = yield* sessions.create({ title: "Parent", permission: allowAll })
+      yield* seedExchange(parent.id, "PARENT_QUESTION_MARKER", "PARENT_ANSWER_MARKER")
+      const side = yield* sessions.create({
+        parentID: parent.id,
+        title: "Side",
+        metadata: { sideChatOf: parent.id },
+      })
+
+      yield* llm.text("SIDE_ANSWER_MARKER")
+      yield* prompt.prompt({ sessionID: side.id, parts: [{ type: "text", text: "SIDE_QUESTION_MARKER" }] })
+      yield* awaitWithTimeout(llm.wait(1), "side chat never called the model", "10 seconds")
+      yield* waitForAssistantText(side.id, "SIDE_ANSWER_MARKER")
+
+      // The parent moves on after the side chat opened; the frozen prefix must not grow.
+      yield* user(parent.id, "PARENT_LATER_MARKER")
+
+      yield* llm.text("SIDE_FOLLOWUP_ANSWER_MARKER")
+      yield* prompt.prompt({ sessionID: side.id, parts: [{ type: "text", text: "SIDE_FOLLOWUP_MARKER" }] })
+      yield* awaitWithTimeout(llm.wait(2), "side chat follow-up never called the model", "10 seconds")
+      yield* waitForAssistantText(side.id, "SIDE_FOLLOWUP_ANSWER_MARKER")
+
+      const hits = yield* llm.hits
+      expect(hits).toHaveLength(2)
+      const body = JSON.stringify(hits[1]!.body)
+      expect(body).toContain("PARENT_QUESTION_MARKER")
+      expect(body).toContain("PARENT_ANSWER_MARKER")
+      expect(body).toContain("SIDE_QUESTION_MARKER")
+      expect(body).toContain("SIDE_ANSWER_MARKER")
+      expect(body).toContain("SIDE_FOLLOWUP_MARKER")
+      expect(body).not.toContain("PARENT_LATER_MARKER")
+    }),
+  30_000,
+)
+
+it.instance(
+  "side chat runs without blocking the parent drain",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const status = yield* SessionStatus.Service
+
+      const parent = yield* sessions.create({ title: "Parent", permission: allowAll })
+      yield* seedExchange(parent.id, "PARENT_QUESTION_MARKER", "PARENT_ANSWER_MARKER")
+      const side = yield* sessions.create({
+        parentID: parent.id,
+        title: "Side",
+        metadata: { sideChatOf: parent.id },
+      })
+
+      yield* llm.hang
+      yield* prompt.prompt({ sessionID: side.id, parts: [{ type: "text", text: "SIDE_QUESTION_MARKER" }] })
+      yield* awaitWithTimeout(llm.wait(1), "side chat never called the model", "10 seconds")
+
+      expect((yield* status.get(parent.id)).type).toBe("idle")
+      expect((yield* status.get(side.id)).type).toBe("busy")
+    }),
+  30_000,
+)

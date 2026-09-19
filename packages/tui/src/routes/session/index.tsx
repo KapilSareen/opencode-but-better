@@ -53,6 +53,8 @@ import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
+import { SidebarChat } from "./sidebar-chat"
+import { useSidebarChat } from "../../context/sidebar-chat"
 import { SubagentFooter } from "./subagent-footer.tsx"
 import { filetype } from "../../util/filetype"
 import parsers from "../../parsers-config"
@@ -122,6 +124,7 @@ const sessionBindingCommands = [
   "session.undo",
   "session.redo",
   "session.sidebar.toggle",
+  "session.side_chat",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -192,6 +195,7 @@ export function Session() {
   const kv = useKV()
   const { theme } = useTheme()
   const promptRef = usePromptRef()
+  const chat = useSidebarChat()
   const session = createMemo(() => sync.session.get(route.sessionID))
   const location = createMemo(() => {
     const current = session()
@@ -206,7 +210,7 @@ export function Session() {
   const children = createMemo(() => {
     const parentID = session()?.parentID ?? session()?.id
     return sync.data.session
-      .filter((x) => x.parentID === parentID || x.id === parentID)
+      .filter((x) => (x.parentID === parentID || x.id === parentID) && !x.metadata?.sideChatOf)
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
@@ -270,6 +274,7 @@ export function Session() {
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
     if (session()?.parentID) return false
+    if (chat.isOpen(route.sessionID)) return true
     if (sidebarOpen()) return true
     if (sidebar() === "auto" && wide()) return true
     return false
@@ -679,6 +684,19 @@ export function Session() {
           setSidebar(() => (isVisible ? "hide" : "auto"))
           setSidebarOpen(!isVisible)
         })
+        dialog.clear()
+      },
+    },
+    {
+      title: chat.isOpen(route.sessionID) ? "Hide side chat" : "Side chat",
+      value: "session.side_chat",
+      category: "Session",
+      slash: {
+        name: "btw",
+        aliases: ["side-chat"],
+      },
+      run: () => {
+        chat.toggle(route.sessionID)
         dialog.clear()
       },
     },
@@ -1323,6 +1341,7 @@ export function Session() {
                       visible={visible()}
                       ref={bind}
                       disabled={disabled()}
+                      focusSuspended={chat.isFocused(route.sessionID)}
                       onSubmit={() => {
                         toBottom()
                       }}
@@ -1338,7 +1357,11 @@ export function Session() {
           <Show when={sidebarVisible()}>
             <Switch>
               <Match when={wide()}>
-                <Sidebar sessionID={route.sessionID} />
+                <Switch fallback={<Sidebar sessionID={route.sessionID} />}>
+                  <Match when={chat.isOpen(route.sessionID)}>
+                    <SidebarChat parentID={route.sessionID} />
+                  </Match>
+                </Switch>
               </Match>
               <Match when={!wide()}>
                 <box
@@ -1350,7 +1373,11 @@ export function Session() {
                   alignItems="flex-end"
                   backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
                 >
-                  <Sidebar sessionID={route.sessionID} />
+                  <Switch fallback={<Sidebar sessionID={route.sessionID} />}>
+                    <Match when={chat.isOpen(route.sessionID)}>
+                      <SidebarChat parentID={route.sessionID} overlay />
+                    </Match>
+                  </Switch>
                 </box>
               </Match>
             </Switch>
