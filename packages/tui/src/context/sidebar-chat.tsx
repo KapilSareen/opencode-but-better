@@ -78,10 +78,11 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
     const ask = async (parentID: string, question: string) => {
       const text = question.trim()
       if (!text) {
-        open(parentID)
+        focus(parentID)
         return
       }
-      open(parentID)
+      // Focus the panel so the follow-up input is ready to type into.
+      focus(parentID)
       try {
         const sideID = await ensure(parentID)
         await sdk.client.session.promptAsync(

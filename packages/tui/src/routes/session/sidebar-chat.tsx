@@ -4,7 +4,7 @@ import { useSidebarChat } from "../../context/sidebar-chat"
 import { useSync } from "../../context/sync"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
-import { useBindings } from "../../keymap"
+import { useBindings, useCommandShortcut } from "../../keymap"
 import { Spinner } from "../../component/spinner"
 
 export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
@@ -12,6 +12,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
   const sync = useSync()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
+  const shortcut = useCommandShortcut("session.side_chat")
   const [target, setTarget] = createSignal<TextareaRenderable>()
   let textarea: TextareaRenderable
 
@@ -88,6 +89,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
       paddingLeft={2}
       paddingRight={2}
       position={props.overlay ? "absolute" : "relative"}
+      onMouseDown={() => chat.focus(props.parentID)}
     >
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
         <text fg={theme.text}>
@@ -150,6 +152,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
             textarea = value
             setTarget(value)
           }}
+          onMouseDown={() => chat.focus(props.parentID)}
           placeholder="Ask something about this session…"
           placeholderColor={theme.textMuted}
           textColor={theme.text}
@@ -158,7 +161,13 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
           cursorStyle={tuiConfig.cursor}
         />
         <box flexDirection="row" justifyContent="space-between">
-          <text fg={theme.textMuted}>enter send · esc back</text>
+          <text fg={theme.textMuted}>
+            enter send
+            <Show when={shortcut()}>
+              <span> · {shortcut()} focus</span>
+            </Show>
+            <span> · esc back</span>
+          </text>
           <Show when={busy()}>
             <text fg={theme.textMuted} onMouseUp={() => void chat.stop(props.parentID)}>
               stop
