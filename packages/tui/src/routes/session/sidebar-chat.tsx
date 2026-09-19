@@ -13,6 +13,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const shortcut = useCommandShortcut("session.side_chat")
+  const newShortcut = useCommandShortcut("session.side_chat.new")
   const [target, setTarget] = createSignal<TextareaRenderable>()
   let textarea: TextareaRenderable
 
@@ -97,7 +98,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
         </text>
         <box flexDirection="row" gap={2}>
           <text fg={theme.textMuted} onMouseUp={() => chat.reset(props.parentID)}>
-            new
+            new<Show when={newShortcut()}>{` ${newShortcut()}`}</Show>
           </text>
           <text fg={theme.textMuted} onMouseUp={() => chat.close(props.parentID)}>
             close

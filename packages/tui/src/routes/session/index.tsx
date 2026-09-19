@@ -125,6 +125,7 @@ const sessionBindingCommands = [
   "session.redo",
   "session.sidebar.toggle",
   "session.side_chat",
+  "session.side_chat.new",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -697,6 +698,15 @@ export function Session() {
       },
       run: () => {
         chat.toggle(route.sessionID)
+        dialog.clear()
+      },
+    },
+    {
+      title: "New side chat",
+      value: "session.side_chat.new",
+      category: "Session",
+      run: () => {
+        void chat.reset(route.sessionID)
         dialog.clear()
       },
     },

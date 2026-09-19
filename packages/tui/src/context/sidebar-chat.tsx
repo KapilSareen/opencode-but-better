@@ -47,12 +47,39 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
     }
 
     // Start a fresh side chat with the parent's current context. The previous
-    // side session stays durable but is unlinked; the next ask snapshots anew.
-    const reset = (parentID: string) => {
+    // side session stays durable but is unlinked; a new one is created so the
+    // panel switches to an empty transcript and the next ask snapshots anew.
+    const reset = async (parentID: string) => {
+      const previous = id(parentID)
+      if (previous) await sdk.client.session.abort({ sessionID: previous }).catch(() => undefined)
+      setState(parentID, () => ({ id: undefined, open: true, focused: true }))
       const map = { ...(kv.get(KV_KEY, {}) as Record<string, string>) }
       delete map[parentID]
       kv.set(KV_KEY, map)
-      setState(parentID, () => ({ open: true, focused: true }))
+      try {
+        const result = await sdk.client.session.create(
+          {
+            parentID,
+            title: "Side chat",
+            metadata: { sideChatOf: parentID },
+          },
+          { throwOnError: true },
+        )
+        const created = result.data!.id
+        setState(parentID, (prev) => ({
+          ...(prev ?? { open: true, focused: false }),
+          id: created,
+          open: true,
+          focused: true,
+        }))
+        remember(parentID, created)
+        await sync.session.sync(created)
+      } catch (error) {
+        toast.show({
+          message: error instanceof Error ? error.message : "Failed to start a new side chat",
+          variant: "error",
+        })
+      }
     }
 
     const remember = (parentID: string, sideID: string) => {
