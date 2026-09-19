@@ -1294,6 +1294,74 @@ describe("tool.task", () => {
     { config: { agent: { worker: { mode: "subagent", isolation: "worktree" } } } },
   )
 
+  it.instance(
+    "subagent edits the shared directory by default",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "worker",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ text: "worker done" }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        const child = yield* sessions.get(result.metadata.sessionId)
+        expect((child.metadata as Record<string, unknown> | undefined)?.worktree).toBeUndefined()
+        expect(result.output).toContain("worker done")
+        expect(result.output).not.toContain("worktree")
+      }),
+    { git: true, config: { agent: { worker: { mode: "subagent" } } } },
+  )
+
+  it.instance(
+    "per-call isolation runs the subagent in a worktree",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "worker",
+            isolation: "worktree",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ text: "worker done" }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        const child = yield* sessions.get(result.metadata.sessionId)
+        const dir = (child.metadata as Record<string, unknown> | undefined)?.worktree
+        expect(typeof dir).toBe("string")
+        expect(result.output).not.toContain("worktree kept")
+        expect(existsSync(dir as string)).toBe(false)
+      }),
+    { git: true, config: { agent: { worker: { mode: "subagent" } } } },
+  )
+
 const clocked = testEffect(layer({ experimentalBackgroundSubagents: true }))
 
 clocked.effect("foreground task upgrades to background on timeout", () =>

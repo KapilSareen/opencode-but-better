@@ -21,7 +21,7 @@ An opinionated fork of opencode: background subagents that don't block you, side
 - **Monitors** — `monitor start` watches a shell command and streams matching output lines into your session; process-group kill so orphans can't hang it.
 - **Cron** — `cron create` delivers a message into a session on a 5-field schedule (one-shots supported).
 - **Sleep** — `sleep` parks the agent with early wake the moment new input arrives, instead of burning a shell on `sleep 300`.
-- **Worktree isolation (default on)** — every subagent works in its own detached git worktree, auto-removed when clean, kept and reported when dirty. `"isolation": "off"` opts out per agent.
+- **Worktree isolation, agent's choice** — subagents edit your working tree by default. The main agent can pass `isolation: "worktree"` on any `task` call to run that agent in a temporary git worktree instead (auto-removed when clean, path returned when dirty); an agent's config can set a default with `"isolation": "worktree"`.
 - **ESC picks up queued input** instead of stranding it; programmatic aborts/kills still stay dead.
 - **Completed diffs stay visible** in the TUI when tool details are hidden — no more flash-then-gone edits.
 
@@ -76,7 +76,7 @@ Notes:
 | Watch a command | `monitor start` with a regex `pattern`; `stop\|status\|list` to manage |
 | Recurring nudge | `cron create` with `"*/15 * * * *"` + message; `delete` to remove |
 | Wait for something | `sleep` with `duration_ms` (wakes early on new input) |
-| Isolate file edits | default on; `"isolation": "off"` per agent to disable |
+| Isolate file edits | off by default; the agent can pass `isolation: "worktree"` per task, or set it per agent |
 | Background a running task yourself | `Ctrl+B` in the TUI |
 | Ask a side question | `/btw <question>` (or `<leader>j` to open the panel) |
 | Follow up in the side chat | type in the panel; `Enter` sends, `esc` returns to main |

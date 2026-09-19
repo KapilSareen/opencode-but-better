@@ -66,6 +66,10 @@ const BaseParameterFields = {
       "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
   }),
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
+  isolation: Schema.optional(Schema.Literals(["off", "worktree"])).annotate({
+    description:
+      'Isolation mode. Set "worktree" to run the agent in a temporary git worktree with an isolated copy of the repository: its edits do not touch your working tree, the worktree is removed if the agent makes no changes, and its path is returned when it does. Omit to run in the shared working directory so the agent edits your files directly.',
+  }),
 }
 
 export const Parameters = Schema.Struct({
@@ -244,11 +248,14 @@ export const TaskTool = Tool.define(
         return undefined
       })
 
-      // Fork default: subagents run in a detached linked worktree and run their
-      // whole drain under that directory. "off" opts out. Resumed tasks reuse
-      // the worktree recorded on the child session.
-      const isolated = (next.isolation ?? "worktree") === "worktree"
-      const explicitIsolation = next.isolation === "worktree"
+      // Isolation is opt-in. The main agent chooses per spawn with the
+      // `isolation` parameter; an agent's configured default applies when the
+      // parameter is omitted, otherwise the subagent shares the working
+      // directory so its edits land in your repo. Resumed tasks reuse the
+      // worktree recorded on the child session.
+      const requestedIsolation = params.isolation ?? next.isolation ?? "off"
+      const isolated = requestedIsolation === "worktree"
+      const explicitIsolation = requestedIsolation === "worktree"
       const existingWorktree =
         isolated && session?.metadata && typeof session.metadata === "object"
           ? (session.metadata as Record<string, unknown>).worktree

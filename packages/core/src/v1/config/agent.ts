@@ -26,7 +26,7 @@ const AgentSchema = Schema.StructWithRest(
     mode: Schema.optional(Schema.Literals(["subagent", "primary", "all"])),
     isolation: Schema.optional(Schema.Literals(["off", "worktree"])).annotate({
       description:
-        "Run this subagent in an isolated git worktree (default: worktree, falls back to shared directory outside git). Set to off to disable.",
+        'Default isolation for this subagent (default: off, edits the shared working directory). "worktree" runs it in a temporary git worktree. The task tool call can override this per spawn.',
     }),
     hidden: Schema.optional(Schema.Boolean).annotate({
       description: "Hide this subagent from the @ autocomplete menu (default: false, only applies to mode: subagent)",
