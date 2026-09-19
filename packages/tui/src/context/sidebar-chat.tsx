@@ -9,8 +9,10 @@ type Entry = {
   id?: string
   open: boolean
   focused: boolean
+  maximized: boolean
 }
 
+const blank: Entry = { open: false, focused: false, maximized: false }
 const KV_KEY = "side_chat_sessions"
 
 export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimpleContext({
@@ -22,6 +24,9 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
     const toast = useToast()
     const [state, setState] = createStore<Record<string, Entry>>({})
 
+    const patch = (parentID: string, value: Partial<Entry>) =>
+      setState(parentID, (prev) => ({ ...(prev ?? blank), ...value }))
+
     const stored = (parentID: string): string | undefined => {
       const map = kv.get(KV_KEY, {}) as Record<string, string>
       return map[parentID]
@@ -30,14 +35,16 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
     const id = (parentID: string) => state[parentID]?.id ?? stored(parentID)
     const isOpen = (parentID: string) => state[parentID]?.open ?? false
     const isFocused = (parentID: string) => state[parentID]?.focused ?? false
+    const isMaximized = (parentID: string) => state[parentID]?.maximized ?? false
 
-    const open = (parentID: string) =>
-      setState(parentID, (prev) => ({ ...(prev ?? { open: false, focused: false }), open: true }))
-    const close = (parentID: string) => setState(parentID, () => ({ open: false, focused: false }))
-    const focus = (parentID: string) =>
-      setState(parentID, (prev) => ({ ...(prev ?? { open: false, focused: false }), open: true, focused: true }))
-    const blur = (parentID: string) =>
-      setState(parentID, (prev) => (prev ? { ...prev, focused: false } : { open: false, focused: false }))
+    const open = (parentID: string) => patch(parentID, { open: true })
+    const close = (parentID: string) => patch(parentID, { open: false, focused: false })
+    const focus = (parentID: string) => patch(parentID, { open: true, focused: true })
+    const blur = (parentID: string) => patch(parentID, { focused: false })
+    const toggleMaximize = (parentID: string) => {
+      const next = !isMaximized(parentID)
+      patch(parentID, { open: true, focused: true, maximized: next })
+    }
     const toggle = (parentID: string) => {
       if (!isOpen(parentID)) return focus(parentID)
       // Focused side input: the toggle closes the panel. Esc is the way back
@@ -52,7 +59,7 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
     const reset = async (parentID: string) => {
       const previous = id(parentID)
       if (previous) await sdk.client.session.abort({ sessionID: previous }).catch(() => undefined)
-      setState(parentID, () => ({ id: undefined, open: true, focused: true }))
+      patch(parentID, { id: undefined, open: true, focused: true })
       const map = { ...(kv.get(KV_KEY, {}) as Record<string, string>) }
       delete map[parentID]
       kv.set(KV_KEY, map)
@@ -66,12 +73,7 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
           { throwOnError: true },
         )
         const created = result.data!.id
-        setState(parentID, (prev) => ({
-          ...(prev ?? { open: true, focused: false }),
-          id: created,
-          open: true,
-          focused: true,
-        }))
+        patch(parentID, { id: created, open: true, focused: true })
         remember(parentID, created)
         await sync.session.sync(created)
       } catch (error) {
@@ -99,7 +101,7 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
         { throwOnError: true },
       )
       const created = result.data!.id
-      setState(parentID, (prev) => ({ ...(prev ?? { open: true, focused: false }), id: created, open: true }))
+      patch(parentID, { id: created, open: true })
       remember(parentID, created)
       await sync.session.sync(created)
       return created
@@ -140,11 +142,13 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
       id,
       isOpen,
       isFocused,
+      isMaximized,
       open,
       close,
       focus,
       blur,
       toggle,
+      toggleMaximize,
       reset,
       ensure,
       ask,

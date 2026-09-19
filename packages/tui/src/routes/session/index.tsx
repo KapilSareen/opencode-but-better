@@ -23,7 +23,7 @@ import { useEvent } from "../../context/event"
 import { SplitBorder } from "../../ui/border"
 import { useTuiPaths, useTuiTerminalEnvironment } from "../../context/runtime"
 import { Spinner } from "../../component/spinner"
-import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
+import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, tint, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
 import type {
@@ -126,6 +126,7 @@ const sessionBindingCommands = [
   "session.sidebar.toggle",
   "session.side_chat",
   "session.side_chat.new",
+  "session.side_chat.maximize",
   "session.toggle.conceal",
   "session.toggle.timestamps",
   "session.toggle.thinking",
@@ -281,7 +282,13 @@ export function Session() {
     return false
   })
   const showTimestamps = createMemo(() => timestamps() === "show")
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? 42 : 0) - 4)
+  const chatWidth = createMemo(() => {
+    if (!chat.isMaximized(route.sessionID)) return 42
+    if (!wide()) return Math.max(42, dimensions().width - 4)
+    return Math.max(64, Math.min(dimensions().width - 50, Math.floor(dimensions().width * 0.62)))
+  })
+  const sidebarPanelWidth = createMemo(() => (chat.isOpen(route.sessionID) ? chatWidth() : 42))
+  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? sidebarPanelWidth() : 0) - 4)
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -707,6 +714,15 @@ export function Session() {
       category: "Session",
       run: () => {
         void chat.reset(route.sessionID)
+        dialog.clear()
+      },
+    },
+    {
+      title: chat.isMaximized(route.sessionID) ? "Minimize side chat" : "Maximize side chat",
+      value: "session.side_chat.maximize",
+      category: "Session",
+      run: () => {
+        chat.toggleMaximize(route.sessionID)
         dialog.clear()
       },
     },
@@ -1378,7 +1394,7 @@ export function Session() {
               <Match when={wide()}>
                 <Switch fallback={<Sidebar sessionID={route.sessionID} />}>
                   <Match when={chat.isOpen(route.sessionID)}>
-                    <SidebarChat parentID={route.sessionID} />
+                    <SidebarChat parentID={route.sessionID} width={chatWidth()} />
                   </Match>
                 </Switch>
               </Match>
@@ -1394,7 +1410,7 @@ export function Session() {
                 >
                   <Switch fallback={<Sidebar sessionID={route.sessionID} />}>
                     <Match when={chat.isOpen(route.sessionID)}>
-                      <SidebarChat parentID={route.sessionID} overlay />
+                      <SidebarChat parentID={route.sessionID} width={chatWidth()} overlay />
                     </Match>
                   </Switch>
                 </box>
@@ -1685,7 +1701,7 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
               syntaxStyle={syntax()}
               content={summary().body}
               conceal={ctx.conceal()}
-              fg={theme.textMuted}
+              fg={tint(theme.textMuted, theme.text, 0.55)}
             />
           </box>
         </Show>

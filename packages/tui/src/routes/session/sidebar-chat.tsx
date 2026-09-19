@@ -2,21 +2,26 @@ import { TextareaRenderable } from "@opentui/core"
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js"
 import { useSidebarChat } from "../../context/sidebar-chat"
 import { useSync } from "../../context/sync"
-import { useTheme } from "../../context/theme"
+import { useTheme, tint } from "../../context/theme"
 import { useTuiConfig } from "../../config"
 import { useBindings, useCommandShortcut } from "../../keymap"
 import { Spinner } from "../../component/spinner"
+import { SplitBorder } from "../../ui/border"
 
-export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
+export function SidebarChat(props: { parentID: string; width: number; overlay?: boolean }) {
   const chat = useSidebarChat()
   const sync = useSync()
   const { theme } = useTheme()
+  const muted = () => tint(theme.textMuted, theme.text, 0.55)
   const tuiConfig = useTuiConfig()
-  const shortcut = useCommandShortcut("session.side_chat")
+  const toggleShortcut = useCommandShortcut("session.side_chat")
   const newShortcut = useCommandShortcut("session.side_chat.new")
+  const maximizeShortcut = useCommandShortcut("session.side_chat.maximize")
   const [target, setTarget] = createSignal<TextareaRenderable>()
   let textarea: TextareaRenderable
 
+  const spacious = createMemo(() => props.width >= 64)
+  const maximized = createMemo(() => chat.isMaximized(props.parentID))
   const sideID = createMemo(() => chat.id(props.parentID))
   const messages = createMemo(() => {
     const id = sideID()
@@ -27,6 +32,11 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
     return id ? sync.data.session_status?.[id] : undefined
   })
   const busy = createMemo(() => status()?.type === "busy" || status()?.type === "retry")
+
+  // The panel exists to ask while the main agent keeps working, so surface the
+  // main session's live status here.
+  const mainStatus = createMemo(() => sync.data.session_status?.[props.parentID])
+  const mainBusy = createMemo(() => mainStatus()?.type === "busy" || mainStatus()?.type === "retry")
 
   const turns = createMemo(() =>
     messages().flatMap((message) => {
@@ -82,7 +92,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
   return (
     <box
       backgroundColor={theme.backgroundPanel}
-      width={42}
+      width={props.width}
       height="100%"
       flexDirection="column"
       paddingTop={1}
@@ -97,17 +107,32 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
           <b>Side chat</b>
         </text>
         <box flexDirection="row" gap={2}>
-          <text fg={theme.textMuted} onMouseUp={() => chat.reset(props.parentID)}>
-            new<Show when={newShortcut()}>{` ${newShortcut()}`}</Show>
+          <text fg={muted()} onMouseUp={() => void chat.reset(props.parentID)}>
+            new<Show when={spacious() && newShortcut()}>{` ${newShortcut()}`}</Show>
           </text>
-          <text fg={theme.textMuted} onMouseUp={() => chat.close(props.parentID)}>
+          <text fg={muted()} onMouseUp={() => chat.toggleMaximize(props.parentID)}>
+            {maximized() ? "minimize" : "maximize"}
+            <Show when={spacious() && maximizeShortcut()}>{` ${maximizeShortcut()}`}</Show>
+          </text>
+          <text fg={muted()} onMouseUp={() => chat.close(props.parentID)}>
             close
           </text>
         </box>
       </box>
-      <text fg={theme.textMuted}>
-        {busy() ? "using this session's context" : "shares this session's context, no tools"}
-      </text>
+
+      <box flexDirection="row" gap={1} flexShrink={0}>
+        <Show
+          when={mainBusy()}
+          fallback={
+            <>
+              <text fg={theme.success}>•</text>
+              <text fg={muted()}>main idle · shares its context</text>
+            </>
+          }
+        >
+          <Spinner color={theme.accent}>main working</Spinner>
+        </Show>
+      </box>
 
       <scrollbox
         flexGrow={1}
@@ -125,22 +150,29 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
         <box flexDirection="column" gap={1} paddingRight={1}>
           <For each={turns()}>
             {(turn) => (
-              <box flexDirection="column">
-                <text fg={turn.role === "user" ? theme.textMuted : theme.accent}>
+              <box
+                flexDirection="column"
+                border={["left"]}
+                customBorderChars={SplitBorder.customBorderChars}
+                borderColor={turn.role === "user" ? theme.primary : theme.accent}
+                paddingLeft={2}
+                paddingTop={1}
+                paddingBottom={1}
+                backgroundColor={turn.role === "user" ? theme.backgroundElement : undefined}
+              >
+                <text fg={turn.role === "user" ? theme.primary : theme.accent}>
                   <b>{turn.role === "user" ? "You" : "Side"}</b>
                 </text>
-                <text fg={turn.role === "user" ? theme.textMuted : theme.text}>{turn.text}</text>
+                <text fg={theme.text}>{turn.text}</text>
               </box>
             )}
           </For>
           <Show when={busy()}>
-            <Spinner color={theme.textMuted}>answering…</Spinner>
+            <Spinner color={muted()}>answering…</Spinner>
           </Show>
           <Show when={turns().length === 0 && !busy()}>
-            <text fg={theme.textMuted}>
-              {sideID()
-                ? "Ask a follow-up below."
-                : "Type a question below to start a side chat."}
+            <text fg={muted()}>
+              {sideID() ? "Ask a follow-up below." : "Type a question below to start a side chat."}
             </text>
           </Show>
         </box>
@@ -155,22 +187,22 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
           }}
           onMouseDown={() => chat.focus(props.parentID)}
           placeholder="Ask something about this session…"
-          placeholderColor={theme.textMuted}
+          placeholderColor={muted()}
           textColor={theme.text}
           focusedTextColor={theme.text}
           cursorColor={theme.text}
           cursorStyle={tuiConfig.cursor}
         />
         <box flexDirection="row" justifyContent="space-between">
-          <text fg={theme.textMuted}>
+          <text fg={muted()}>
             enter send
-            <Show when={shortcut()}>
-              <span> · {shortcut()} {chat.isFocused(props.parentID) ? "close" : "focus"}</span>
+            <Show when={toggleShortcut()}>
+              <span> · {toggleShortcut()} {chat.isFocused(props.parentID) ? "close" : "focus"}</span>
             </Show>
             <span> · esc back</span>
           </text>
           <Show when={busy()}>
-            <text fg={theme.textMuted} onMouseUp={() => void chat.stop(props.parentID)}>
+            <text fg={muted()} onMouseUp={() => void chat.stop(props.parentID)}>
               stop
             </text>
           </Show>
