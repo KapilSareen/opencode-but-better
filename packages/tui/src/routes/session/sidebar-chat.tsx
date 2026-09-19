@@ -164,7 +164,7 @@ export function SidebarChat(props: { parentID: string; overlay?: boolean }) {
           <text fg={theme.textMuted}>
             enter send
             <Show when={shortcut()}>
-              <span> · {shortcut()} focus</span>
+              <span> · {shortcut()} {chat.isFocused(props.parentID) ? "close" : "focus"}</span>
             </Show>
             <span> · esc back</span>
           </text>

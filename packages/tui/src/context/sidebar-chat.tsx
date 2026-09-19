@@ -39,8 +39,11 @@ export const { use: useSidebarChat, provider: SidebarChatProvider } = createSimp
     const blur = (parentID: string) =>
       setState(parentID, (prev) => (prev ? { ...prev, focused: false } : { open: false, focused: false }))
     const toggle = (parentID: string) => {
-      if (!isOpen(parentID) || !isFocused(parentID)) return focus(parentID)
-      return blur(parentID)
+      if (!isOpen(parentID)) return focus(parentID)
+      // Focused side input: the toggle closes the panel. Esc is the way back
+      // to the main prompt without closing.
+      if (isFocused(parentID)) return close(parentID)
+      return focus(parentID)
     }
 
     // Start a fresh side chat with the parent's current context. The previous
