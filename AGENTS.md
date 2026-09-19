@@ -159,3 +159,14 @@ const table = sqliteTable("session", {
 - Keep delivery vocabulary explicit. Prompts steer by default and promote at the next safe provider-turn boundary while the current drain requires continuation. An explicit `queue` input remains pending until the Session would otherwise become idle; promote one queued input at that boundary, then reevaluate continuation before promoting another. Promoting any new user input resets the selected agent's provider-turn allowance; a batch of steers resets it once.
 - Keep EventV2 replay owner claims separate from clustered Session execution ownership.
 - Keep the System Context algebra, registry, and built-ins in `src/system-context`; keep Context Source producers with their observed domains, and keep Session History selection plus Context Epoch persistence Session-owned.
+
+## Fork shipping (opencode-extended, branch `better`)
+
+This checkout is the `opencode-extended` fork. After code changes, follow the
+`ship-fork` skill (`.opencode/skills/ship-fork/SKILL.md`): verify (typecheck +
+affected suites from package dirs), rebuild the host binary
+(`bun run script/build.ts --single --skip-install` from `packages/opencode`),
+smoke it, remind about stale TUI processes running deleted binaries, then commit
+(conventional messages) and push `better` (pre-push hook runs full turbo typecheck).
+Upstream is `anomalyco/opencode` (`sst/opencode` redirects there). Draft GitHub
+issues in chat first; no em dashes in issue text.
