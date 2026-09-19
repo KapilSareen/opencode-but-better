@@ -70,6 +70,8 @@ export type PromptProps = {
   right?: JSX.Element
   showPlaceholder?: boolean
   focusSuspended?: boolean
+  // Return true to consume the raw input instead of sending it to the session.
+  onIntercept?: (input: string) => boolean
   placeholders?: {
     normal?: string[]
     shell?: string[]
@@ -964,6 +966,18 @@ export function Prompt(props: PromptProps) {
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
+      return true
+    }
+    if (props.onIntercept?.(store.prompt.input) === true) {
+      history.append({ ...store.prompt, mode: store.mode })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      props.onSubmit?.()
+      input.clear()
       return true
     }
     const selectedModel = local.model.current()

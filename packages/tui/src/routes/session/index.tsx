@@ -1342,6 +1342,15 @@ export function Session() {
                       ref={bind}
                       disabled={disabled()}
                       focusSuspended={chat.isFocused(route.sessionID)}
+                      onIntercept={(text) => {
+                        if (session()?.parentID) return false
+                        const value = text.trimStart()
+                        if (!(value === "/btw" || value.startsWith("/btw ") || value.startsWith("/btw\n"))) return false
+                        const question = value.slice("/btw".length).trim()
+                        if (question) void chat.ask(route.sessionID, question)
+                        else chat.focus(route.sessionID)
+                        return true
+                      }}
                       onSubmit={() => {
                         toBottom()
                       }}
