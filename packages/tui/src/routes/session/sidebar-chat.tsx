@@ -20,7 +20,6 @@ export function SidebarChat(props: { parentID: string; width: number; overlay?: 
   const [target, setTarget] = createSignal<TextareaRenderable>()
   let textarea: TextareaRenderable
 
-  const spacious = createMemo(() => props.width >= 64)
   const maximized = createMemo(() => chat.isMaximized(props.parentID))
   const sideID = createMemo(() => chat.id(props.parentID))
   const messages = createMemo(() => {
@@ -102,36 +101,37 @@ export function SidebarChat(props: { parentID: string; width: number; overlay?: 
       position={props.overlay ? "absolute" : "relative"}
       onMouseDown={() => chat.focus(props.parentID)}
     >
-      <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
-        <text fg={theme.text}>
-          <b>Side chat</b>
-        </text>
-        <box flexDirection="row" gap={2}>
-          <text fg={muted()} onMouseUp={() => void chat.reset(props.parentID)}>
-            new<Show when={spacious() && newShortcut()}>{` ${newShortcut()}`}</Show>
+      <box flexDirection="column" flexShrink={0}>
+        <box flexDirection="row" justifyContent="space-between" gap={2}>
+          <text fg={theme.text}>
+            <b>Side chat</b>
           </text>
-          <text fg={muted()} onMouseUp={() => chat.toggleMaximize(props.parentID)}>
-            {maximized() ? "minimize" : "maximize"}
-            <Show when={spacious() && maximizeShortcut()}>{` ${maximizeShortcut()}`}</Show>
-          </text>
-          <text fg={muted()} onMouseUp={() => chat.close(props.parentID)}>
-            close
-          </text>
+          <Show
+            when={mainBusy()}
+            fallback={
+              <text>
+                <span style={{ fg: theme.success }}>•</span>
+                <span style={{ fg: muted() }}> main idle</span>
+              </text>
+            }
+          >
+            <Spinner color={theme.accent}>main working</Spinner>
+          </Show>
         </box>
-      </box>
-
-      <box flexDirection="row" gap={1} flexShrink={0}>
-        <Show
-          when={mainBusy()}
-          fallback={
-            <>
-              <text fg={theme.success}>•</text>
-              <text fg={muted()}>main idle · shares its context</text>
-            </>
-          }
-        >
-          <Spinner color={theme.accent}>main working</Spinner>
-        </Show>
+        <box flexDirection="row" gap={2}>
+          <box flexDirection="column" alignItems="center" onMouseUp={() => void chat.reset(props.parentID)}>
+            <text fg={theme.text}>new</text>
+            <text fg={muted()}>{newShortcut()}</text>
+          </box>
+          <box flexDirection="column" alignItems="center" onMouseUp={() => chat.toggleMaximize(props.parentID)}>
+            <text fg={theme.text}>{maximized() ? "minimize" : "maximize"}</text>
+            <text fg={muted()}>{maximizeShortcut()}</text>
+          </box>
+          <box flexDirection="column" alignItems="center" onMouseUp={() => chat.close(props.parentID)}>
+            <text fg={theme.text}>close</text>
+            <text fg={muted()}>{toggleShortcut()}</text>
+          </box>
+        </box>
       </box>
 
       <scrollbox

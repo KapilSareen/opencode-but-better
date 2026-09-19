@@ -284,11 +284,13 @@ export function Session() {
   const showTimestamps = createMemo(() => timestamps() === "show")
   const chatWidth = createMemo(() => {
     if (!chat.isMaximized(route.sessionID)) return 42
-    if (!wide()) return Math.max(42, dimensions().width - 4)
-    return Math.max(64, Math.min(dimensions().width - 50, Math.floor(dimensions().width * 0.62)))
+    return dimensions().width
   })
   const sidebarPanelWidth = createMemo(() => (chat.isOpen(route.sessionID) ? chatWidth() : 42))
-  const contentWidth = createMemo(() => dimensions().width - (sidebarVisible() ? sidebarPanelWidth() : 0) - 4)
+  const mainHidden = createMemo(() => chat.isOpen(route.sessionID) && chat.isMaximized(route.sessionID))
+  const contentWidth = createMemo(() =>
+    Math.max(0, dimensions().width - (sidebarVisible() ? sidebarPanelWidth() : 0) - 4),
+  )
   const providers = createMemo(() => Model.index(sync.data.provider))
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
@@ -1219,7 +1221,7 @@ export function Session() {
         }}
       >
         <box flexDirection="row" flexGrow={1} minHeight={0}>
-          <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
+          <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1} visible={!mainHidden()}>
             <Show when={session()}>
               <scrollbox
                 ref={(r) => (scroll = r)}
